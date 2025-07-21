@@ -1,13 +1,28 @@
 /**
- * Script de correção para problemas de localStorage
+ * Script de correção para problemas de localStorage e toLocaleString
  * Este script deve ser carregado ANTES do arquivo principal do React
  */
 
 (function() {
     'use strict';
     
-    console.log('Iniciando correção de localStorage...');
+    console.log('Iniciando correção de localStorage e toLocaleString...');
     
+    // Garante que Number.prototype.toLocaleString é sobrescrito antes de qualquer outro script
+    const originalNumberToLocaleString = Number.prototype.toLocaleString;
+    Number.prototype.toLocaleString = function(...args) {
+        if (this === null || this === undefined || isNaN(this) || !isFinite(this)) {
+            console.warn('Tentativa de chamar toLocaleString em valor inválido:', this);
+            return '0'; // Retorna um valor padrão para evitar o erro
+        }
+        try {
+            return originalNumberToLocaleString.apply(this, args);
+        } catch (e) {
+            console.error('Erro ao formatar número com toLocaleString:', e, 'Valor:', this);
+            return '0'; // Fallback em caso de erro inesperado na formatação
+        }
+    };
+
     // Função para validar e limpar dados corrompidos do localStorage
     function validateAndCleanLocalStorage() {
         const keysToCheck = [
@@ -19,45 +34,28 @@
             try {
                 const data = localStorage.getItem(key);
                 if (data) {
-                    // Tenta fazer parse dos dados
                     const parsedData = JSON.parse(data);
                     
-                    // Se os dados contêm arrays, verifica se há valores inválidos
-                    if (Array.isArray(parsedData)) {
-                        const cleanedData = parsedData.filter(item => {
-                            if (typeof item === 'object' && item !== null) {
-                                // Verifica se há propriedades numéricas inválidas
-                                for (let prop in item) {
-                                    if (typeof item[prop] === 'number' && (isNaN(item[prop]) || !isFinite(item[prop]))) {
-                                        console.warn(`Removendo item com valor inválido para ${prop}:`, item[prop]);
-                                        return false;
-                                    }
+                    // Verifica se há valores inválidos (NaN, Infinity) em números
+                    let hasInvalidNumbers = false;
+                    function checkInvalidNumbers(obj) {
+                        if (Array.isArray(obj)) {
+                            obj.forEach(item => checkInvalidNumbers(item));
+                        } else if (typeof obj === 'object' && obj !== null) {
+                            for (let prop in obj) {
+                                if (typeof obj[prop] === 'number' && (isNaN(obj[prop]) || !isFinite(obj[prop]))) {
+                                    hasInvalidNumbers = true;
+                                    console.warn(`Valor numérico inválido encontrado para a chave ${key}, propriedade ${prop}:`, obj[prop]);
                                 }
-                                return true;
-                            }
-                            return typeof item !== 'undefined' && item !== null;
-                        });
-                        
-                        if (cleanedData.length !== parsedData.length) {
-                            console.log(`Limpando dados corrompidos para a chave: ${key}`);
-                            localStorage.setItem(key, JSON.stringify(cleanedData));
-                        }
-                    } else if (typeof parsedData === 'object' && parsedData !== null) {
-                        // Se é um objeto, verifica propriedades numéricas
-                        let hasInvalidData = false;
-                        const cleanedData = { ...parsedData };
-                        
-                        for (let prop in cleanedData) {
-                            if (typeof cleanedData[prop] === 'number' && (isNaN(cleanedData[prop]) || !isFinite(cleanedData[prop]))) {
-                                console.warn(`Removendo propriedade inválida ${prop}:`, cleanedData[prop]);
-                                delete cleanedData[prop];
-                                hasInvalidData = true;
+                                checkInvalidNumbers(obj[prop]); // Recursão para objetos aninhados
                             }
                         }
-                        
-                        if (hasInvalidData) {
-                            localStorage.setItem(key, JSON.stringify(cleanedData));
-                        }
+                    }
+                    checkInvalidNumbers(parsedData);
+
+                    if (hasInvalidNumbers) {
+                        console.warn(`Dados corrompidos detectados para a chave: ${key}. Limpando...`);
+                        localStorage.removeItem(key); // Remove dados corrompidos
                     }
                 }
             } catch (error) {
@@ -68,51 +66,40 @@
         });
     }
     
-    // Sobrescreve o Number.prototype.toLocaleString para ser mais defensivo
-    const originalToLocaleString = Number.prototype.toLocaleString;
-    Number.prototype.toLocaleString = function(...args) {
-        if (this === null || this === undefined || isNaN(this) || !isFinite(this)) {
-            console.warn('Tentativa de chamar toLocaleString em valor inválido:', this);
-            return '0';
-        }
-        return originalToLocaleString.apply(this, args);
-    };
-    
     // Sobrescreve o localStorage.setItem para validar dados antes de salvar
     const originalSetItem = localStorage.setItem;
     localStorage.setItem = function(key, value) {
         try {
-            // Tenta fazer parse para validar se é JSON válido
+            // Tenta fazer parse para validar se é JSON válido e se não contém números inválidos
             if (typeof value === 'string' && (value.startsWith('{') || value.startsWith('['))) {
                 const parsed = JSON.parse(value);
                 
-                // Valida se há números inválidos no objeto/array
-                function hasInvalidNumbers(obj) {
+                function containsInvalidNumbers(obj) {
                     if (Array.isArray(obj)) {
-                        return obj.some(item => hasInvalidNumbers(item));
+                        return obj.some(item => containsInvalidNumbers(item));
                     } else if (typeof obj === 'object' && obj !== null) {
-                        return Object.values(obj).some(val => hasInvalidNumbers(val));
+                        return Object.values(obj).some(val => containsInvalidNumbers(val));
                     } else if (typeof obj === 'number') {
                         return isNaN(obj) || !isFinite(obj);
                     }
                     return false;
                 }
                 
-                if (hasInvalidNumbers(parsed)) {
-                    console.error('Tentativa de salvar dados com números inválidos:', parsed);
+                if (containsInvalidNumbers(parsed)) {
+                    console.error('Tentativa de salvar dados com números inválidos. Salvamento abortado para chave:', key, 'Valor:', parsed);
                     return; // Não salva dados inválidos
                 }
             }
             
             return originalSetItem.call(this, key, value);
         } catch (error) {
-            console.error('Erro ao salvar no localStorage:', error);
+            console.error('Erro ao salvar no localStorage:', error, 'Chave:', key, 'Valor:', value);
         }
     };
     
     // Executa a limpeza inicial
     validateAndCleanLocalStorage();
     
-    console.log('Correção de localStorage aplicada com sucesso!');
+    console.log('Correção de localStorage e toLocaleString aplicada com sucesso!');
 })();
 
